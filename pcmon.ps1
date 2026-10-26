@@ -618,17 +618,32 @@ function Retro-Net($s) {
     $pct = if ($max -gt 0) { 100 * $s.netDown / $max } else { 0 }
     RetroTile $Retro.net 'v NET' $d[0] $d[1] $Retro.text "^ $($u[0]) $($u[1])" $pct $Retro.net $false
 }
+# Knight Rider sweep over the 12 segments: a bright head with a fading tail, bouncing left-right.
+function SweepBar($g, [single]$y, [int]$pos, [System.Drawing.Color]$c) {
+    for ($i = 0; $i -lt 12; $i++) {
+        $d = [Math]::Abs($i - $pos)
+        $col = $Retro.dim
+        if ($d -eq 0) { $col = $Retro.text } elseif ($d -eq 1) { $col = $c } elseif ($d -eq 2) { $col = [System.Drawing.Color]::FromArgb(110, $c) }
+        $g.FillRectangle((Brush $col), 7 + $i * 10, $y, 8, 14)
+    }
+}
+# Animated: 8 frames, uploaded once a minute (the hash check skips identical frames), looped by the device.
+# The colon blinks (1 s on, 1 s off) and the bar sweeps back and forth.
 function Retro-Clock($s) {
     $now = Get-Date
-    $up = $s.uptime; $upTxt = if ($up.Days -gt 0) { "$($up.Days)D $($up.Hours)H" } else { "$($up.Hours)H $($up.Minutes)M" }
-    $bmp, $g = New-Tile
-    RetroFrame $g $Retro.clock $now.ToString('dddd', $NbNo)
-    PxText $g $now.ToString('HH:mm') 64 30 4 $Retro.text 'C'
-    PxText $g $now.ToString('d. MMM', $NbNo) 64 66 2 $Retro.text 'C'
-    PxText $g "UP $upTxt" 64 84 2 $Retro.muted 'C'
-    SegBar $g 102 (100 * $now.Minute / 60) $Retro.clock $false
-    Scanlines $g
-    $g.Dispose(); $bmp
+    $up = $s.uptime; $upTxt = if ($up.Days -gt 0) { "$($up.Days)D $($up.Hours)H" } else { "$($up.Hours)H" }
+    $sweep = 1, 4, 7, 10, 10, 7, 4, 1
+    0..7 | ForEach-Object {
+        $bmp, $g = New-Tile
+        RetroFrame $g $Retro.clock $now.ToString('dddd', $NbNo)
+        $t = $now.ToString('HH:mm'); if ($_ -ge 4) { $t = $t.Replace(':', ' ') }   # space is as wide as the colon
+        PxText $g $t 64 30 4 $Retro.text 'C'
+        PxText $g $now.ToString('d. MMM', $NbNo) 64 66 2 $Retro.text 'C'
+        PxText $g "UP $upTxt" 64 84 2 $Retro.muted 'C'
+        SweepBar $g 102 $sweep[$_] $Retro.clock
+        Scanlines $g
+        $g.Dispose(); $bmp
+    }
 }
 
 function Get-TileSet([string]$style) {
@@ -665,18 +680,24 @@ function Invoke-Divoom($body) {
 }
 $script:PicId = 0
 $script:LastHash = @{}
-# Returns $false (and sends nothing) when the picture is identical to the last one sent to this screen:
-# the device processes ~1 picture/s, so unchanged tiles must not take a slot.
-function Send-Tile([System.Drawing.Bitmap]$bmp, [int]$lcd) {
-    $jpeg = Encode-Jpeg $bmp
-    $hash = [BitConverter]::ToString([System.Security.Cryptography.MD5]::Create().ComputeHash($jpeg))
+# Sends one picture, or an animation when given several frames (same PicID, PicOffset 0..n-1; the device
+# loops it locally at $FrameMs per frame). Returns $false and sends nothing when the frames are identical
+# to the last ones sent to this screen: the device processes ~1 picture/s, so unchanged tiles must not take a slot.
+$FrameMs = 250
+function Send-Tile([System.Drawing.Bitmap[]]$frames, [int]$lcd) {
+    $jpegs = @(foreach ($f in $frames) { , (Encode-Jpeg $f) })
+    $md5 = [System.Security.Cryptography.MD5]::Create()
+    $hash = ($jpegs | ForEach-Object { [BitConverter]::ToString($md5.ComputeHash($_)) }) -join '|'
     if ($script:LastHash[$lcd] -eq $hash) { return $false }
     $script:LastHash[$lcd] = $hash
-    $script:LastBytes = $jpeg.Length
+    $script:LastBytes = ($jpegs | Measure-Object Length -Sum).Sum
     $arr = @(0, 0, 0, 0, 0); $arr[$lcd] = 1
     if ($FixedIds) { $id = $lcd + 1 } else { $script:PicId++; $id = $script:PicId }
-    Invoke-Divoom @{ Command = 'Draw/SendHttpGif'; LcdArray = $arr; PicNum = 1; PicWidth = $Size; PicOffset = 0
-                     PicID = $id; PicSpeed = $PicSpeed; PicData = [Convert]::ToBase64String($jpeg) } | Out-Null
+    $speed = $PicSpeed; if ($jpegs.Count -gt 1) { $speed = $FrameMs }
+    for ($i = 0; $i -lt $jpegs.Count; $i++) {
+        Invoke-Divoom @{ Command = 'Draw/SendHttpGif'; LcdArray = $arr; PicNum = $jpegs.Count; PicWidth = $Size; PicOffset = $i
+                         PicID = $id; PicSpeed = $speed; PicData = [Convert]::ToBase64String($jpegs[$i]) } | Out-Null
+    }
     $true
 }
 # Insert a JPEG COM (comment) segment of $extra bytes right after the SOI marker. Decoders ignore it.
@@ -715,8 +736,9 @@ if ($Preview) {
         $set = Get-TileSet $Styles[$r]
         Text $sg $Styles[$r] (Font 16) $Col.text 8 (8 + $r * (2 * $Size + 8) + 110)
         for ($i = 0; $i -lt 5; $i++) {
-            $bmp = & $set[$i] $s
+            $frames = @(& $set[$i] $s); $bmp = $frames[0]
             $bmp.Save((Join-Path $sd "tile$i.png"), [System.Drawing.Imaging.ImageFormat]::Png)
+            for ($k = 1; $k -lt $frames.Count; $k++) { $frames[$k].Save((Join-Path $sd "tile$i-frame$k.png"), [System.Drawing.Imaging.ImageFormat]::Png) }
             $jpeg = Encode-Jpeg $bmp
             [IO.File]::WriteAllBytes((Join-Path $sd "tile$i.jpg"), $jpeg)   # what the device actually receives
             Write-Host ("{0,-7} tile{1}: {2} bytes q{3}" -f $Styles[$r], $i, $jpeg.Length, $script:LastQuality)
@@ -750,12 +772,12 @@ while ($true) {
             $t = $map[$i]
             $due = ($now - $LastSent[$i]).TotalSeconds -ge $TilePeriod[$t]
             if (-not $due -and -not ($t -eq 4 -and $minuteTurned)) { continue }
-            $bmp = & $Tiles[$t] $s
+            $frames = @(& $Tiles[$t] $s)      # one bitmap, or several for an animated tile
             $sw = [Diagnostics.Stopwatch]::StartNew()
-            $sent = Send-Tile $bmp $i
+            $sent = Send-Tile $frames $i
             $LastSent[$i] = Get-Date
             if (-not $sent) { continue }
-            if ($Log) { Write-Host ("{0:HH:mm:ss.f} screen {1} tile {2} id {3} {4} bytes q{5} {6} ms" -f (Get-Date), $i, $t, $script:PicId, $script:LastBytes, $script:LastQuality, $sw.ElapsedMilliseconds) }
+            if ($Log) { Write-Host ("{0:HH:mm:ss.f} screen {1} tile {2} id {3} {4} frame(s) {5} bytes q{6} {7} ms" -f (Get-Date), $i, $t, $script:PicId, $frames.Count, $script:LastBytes, $script:LastQuality, $sw.ElapsedMilliseconds) }
             if ($Gap -gt 0) { Start-Sleep -Milliseconds ($Gap * 1000) }
         }
         # IDs grow forever otherwise; reset occasionally and immediately repaint.
