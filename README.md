@@ -66,6 +66,10 @@ Everything in `NOTES.md` was found by probing a real Times Gate; Divoom publishe
 
 `divoom.ps1` is a small test tool for sending your own images or random test pictures to any screen.
 
+### Is there a faster way? (spoiler: no)
+
+The device plays its own animations smoothly, but the HTTP upload path manages about one picture per second, serially, whatever the picture size or screen. To check whether the official app knows a faster local command, `tools/` contains what was used to run the Android app in an emulator and capture its LAN traffic (`capture-app-traffic.ps1`, `analyse-capture.ps1`; the capture itself is done on Windows with the built-in `pktmon`, since the emulator's own capture misses its virtual Wi-Fi). Result: the app never sends pictures over the LAN at all; it uploads to Divoom's cloud and the device fetches from there. Details and the handful of local commands it does use are in `NOTES.md`.
+
 ## Files
 
 - `pcmon.ps1` – the dashboard

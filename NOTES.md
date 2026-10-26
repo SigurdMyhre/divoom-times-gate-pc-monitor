@@ -24,6 +24,13 @@ Divoom's official Times Gate guide has no payload details. Everything below was 
 - Re-sending with a PicID the device has already seen is **ignored** (screen freezes), so every update needs a new ID.
 - **JPEG size must stay in a window of roughly 5–6.5 KB**, or the screen flashes a loading spinner for ~0.5 s before the picture appears. Too small (~4 KB, the device also answers these faster, ~400 ms vs ~720 ms) and too large (7–10 KB) both trigger it. Fix in pcmon.ps1: `Encode-Jpeg` lowers the quality until the file is ≤ 6.5 KB, then `Pad-Jpeg` pads to ≥ 6 KB with a COM (comment) segment after the SOI marker. With that, pictures can be sent back-to-back with no pause. (Pauses between pictures, `PicSpeed` and send order only looked like they helped.)
 
+## What the official app does on the LAN (captured 2026-10-26)
+The Android app was run in an emulator while sending pictures, drawings and clock changes to the device, with all traffic to the device's IP captured on the host (`tools/capture-app-traffic.ps1`, `tools/analyse-capture.ps1`). Result: **the app never sends picture data over the LAN**. Everything you "send" goes to Divoom's cloud and the device downloads it from there. The only local requests in a whole session were 17 small JSON commands, all with `DeviceId`, `Token` and `UserId` fields added (the device answered them without those fields too):
+- `Photo/TestLocal` – sent in a burst of 11 right after login; apparently a "can I reach the device locally?" probe.
+- `Channel/GetOnOffScreen`, `Channel/GetRGBInfo` – status reads.
+- `Channel/Set5LcdChannelType` – switching one screen to a clock: `{"ChannelType":1,"ClockId":0,"LcdIndex":0,"LcdIndependence":955535,"PageIndex":0,"ParentClockId":0,"ParentItemId":"","Language":"en", ...}`.
+So there is no faster LAN picture path to discover from the app; `Draw/SendHttpGif` at ~1 picture/s is the device's only local upload route.
+
 ## Other commands
 - Accepted: `Channel/SetBrightness {Brightness}`, `Channel/OnOffScreen {OnOff}`, `Channel/GetClockInfo {LcdIndex}` (returns ClockId, Brightness), `Channel/SetClockSelectId`, `Channel/SetCustomPageIndex`, `Channel/SetEqPosition`, `Channel/SetCustom`, `Channel/Set5LcdChannelType`, `Draw/ClearHttpText`, `Device/PlayGif`, `Device/SetUTC`, `Device/SetHighLightMode`, `Tools/SetTimer`, `Sys/GetConf`
 - Rejected: `Draw/SendHttpText`, `Draw/SendHttpItemList`, `Device/PlayTFGif`, `Channel/SetLcdsIndependence`, `Device/GetDeviceInfo`, `Device/Hello`
