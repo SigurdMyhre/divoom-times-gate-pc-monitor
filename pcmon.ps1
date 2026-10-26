@@ -664,13 +664,20 @@ function Invoke-Divoom($body) {
         -Body ($body | ConvertTo-Json -Compress -Depth 5) -TimeoutSec 10
 }
 $script:PicId = 0
+$script:LastHash = @{}
+# Returns $false (and sends nothing) when the picture is identical to the last one sent to this screen:
+# the device processes ~1 picture/s, so unchanged tiles must not take a slot.
 function Send-Tile([System.Drawing.Bitmap]$bmp, [int]$lcd) {
     $jpeg = Encode-Jpeg $bmp
+    $hash = [BitConverter]::ToString([System.Security.Cryptography.MD5]::Create().ComputeHash($jpeg))
+    if ($script:LastHash[$lcd] -eq $hash) { return $false }
+    $script:LastHash[$lcd] = $hash
     $script:LastBytes = $jpeg.Length
     $arr = @(0, 0, 0, 0, 0); $arr[$lcd] = 1
     if ($FixedIds) { $id = $lcd + 1 } else { $script:PicId++; $id = $script:PicId }
     Invoke-Divoom @{ Command = 'Draw/SendHttpGif'; LcdArray = $arr; PicNum = 1; PicWidth = $Size; PicOffset = 0
                      PicID = $id; PicSpeed = $PicSpeed; PicData = [Convert]::ToBase64String($jpeg) } | Out-Null
+    $true
 }
 # Insert a JPEG COM (comment) segment of $extra bytes right after the SOI marker. Decoders ignore it.
 function Pad-Jpeg([byte[]]$jpeg, [int]$extra) {
@@ -684,6 +691,7 @@ function Reset-Device {
     Invoke-Divoom @{ Command = 'Channel/SetIndex'; SelectIndex = 3 } | Out-Null
     Invoke-Divoom @{ Command = 'Draw/ResetHttpGifId' } | Out-Null
     $script:PicId = 0
+    $script:LastHash = @{}   # everything must be re-sent after a reset
 }
 
 # ---------- main ----------
@@ -735,6 +743,7 @@ while ($true) {
         }
         $s = Get-Stats
         $now = Get-Date
+        $cycleStart = $now
         $minuteTurned = $now.Minute -ne $script:LastMinute; $script:LastMinute = $now.Minute
         $map = [int[]]($Layout -split ',')   # not $layout: PowerShell variable names are case-insensitive
         foreach ($i in [int[]]($Order -split ',')) {
@@ -743,8 +752,9 @@ while ($true) {
             if (-not $due -and -not ($t -eq 4 -and $minuteTurned)) { continue }
             $bmp = & $Tiles[$t] $s
             $sw = [Diagnostics.Stopwatch]::StartNew()
-            Send-Tile $bmp $i
+            $sent = Send-Tile $bmp $i
             $LastSent[$i] = Get-Date
+            if (-not $sent) { continue }
             if ($Log) { Write-Host ("{0:HH:mm:ss.f} screen {1} tile {2} id {3} {4} bytes q{5} {6} ms" -f (Get-Date), $i, $t, $script:PicId, $script:LastBytes, $script:LastQuality, $sw.ElapsedMilliseconds) }
             if ($Gap -gt 0) { Start-Sleep -Milliseconds ($Gap * 1000) }
         }
@@ -755,4 +765,7 @@ while ($true) {
         $connected = $false; Start-Sleep 10; continue
     }
     if ($Interval -gt 0) { Start-Sleep $Interval }
+    # Don't spin at full speed when nothing changed: at least 1 s between samples.
+    $left = 1000 - ((Get-Date) - $cycleStart).TotalMilliseconds
+    if ($left -gt 0) { Start-Sleep -Milliseconds $left }
 }
