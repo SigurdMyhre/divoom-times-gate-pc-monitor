@@ -19,6 +19,10 @@ param(
     [ValidateSet('detail', 'big', 'duo', 'gauge', 'retro')]
     [string]$Style = 'retro',                           # tile design (see the style functions below)
     [switch]$Demo,                                      # cycle through all styles, 20 s each
+    [ValidateSet(1, 2, 8)]
+    [int]$ClockFrames = 2,                              # retro clock: 1 static, 2 blinking colon, 8 blink + sweeping bar.
+                                                        # The device shows a spinner until all frames of a new upload
+                                                        # have arrived (~0.85 s per frame), once a minute.
     [switch]$Preview
 )
 $Styles = 'retro', 'big', 'duo', 'gauge', 'detail'
@@ -627,20 +631,20 @@ function SweepBar($g, [single]$y, [int]$pos, [System.Drawing.Color]$c) {
         $g.FillRectangle((Brush $col), 7 + $i * 10, $y, 8, 14)
     }
 }
-# Animated: 8 frames, uploaded once a minute (the hash check skips identical frames), looped by the device.
-# The colon blinks (1 s on, 1 s off) and the bar sweeps back and forth.
+# Animated clock, uploaded once a minute (the hash check skips identical frames) and looped by the device.
+# -ClockFrames 1: static.  2: colon blinks (frame time is stretched to 1 s).  8: blink + bar sweeping back and forth.
 function Retro-Clock($s) {
     $now = Get-Date
     $up = $s.uptime; $upTxt = if ($up.Days -gt 0) { "$($up.Days)D $($up.Hours)H" } else { "$($up.Hours)H" }
     $sweep = 1, 4, 7, 10, 10, 7, 4, 1
-    0..7 | ForEach-Object {
+    0..($ClockFrames - 1) | ForEach-Object {
         $bmp, $g = New-Tile
         RetroFrame $g $Retro.clock $now.ToString('dddd', $NbNo)
-        $t = $now.ToString('HH:mm'); if ($_ -ge 4) { $t = $t.Replace(':', ' ') }   # space is as wide as the colon
+        $t = $now.ToString('HH:mm'); if ($_ -ge $ClockFrames / 2) { $t = $t.Replace(':', ' ') }   # space is as wide as the colon
         PxText $g $t 64 30 4 $Retro.text 'C'
         PxText $g $now.ToString('d. MMM', $NbNo) 64 66 2 $Retro.text 'C'
         PxText $g "UP $upTxt" 64 84 2 $Retro.muted 'C'
-        SweepBar $g 102 $sweep[$_] $Retro.clock
+        if ($ClockFrames -ge 8) { SweepBar $g 102 $sweep[$_] $Retro.clock } else { SegBar $g 102 (100 * $now.Minute / 60) $Retro.clock $false }
         Scanlines $g
         $g.Dispose(); $bmp
     }
@@ -693,7 +697,7 @@ function Send-Tile([System.Drawing.Bitmap[]]$frames, [int]$lcd) {
     $script:LastBytes = ($jpegs | Measure-Object Length -Sum).Sum
     $arr = @(0, 0, 0, 0, 0); $arr[$lcd] = 1
     if ($FixedIds) { $id = $lcd + 1 } else { $script:PicId++; $id = $script:PicId }
-    $speed = $PicSpeed; if ($jpegs.Count -gt 1) { $speed = $FrameMs }
+    $speed = $PicSpeed; if ($jpegs.Count -gt 1) { $speed = $FrameMs * 8 / $jpegs.Count }   # 2 frames -> 1 s each
     for ($i = 0; $i -lt $jpegs.Count; $i++) {
         Invoke-Divoom @{ Command = 'Draw/SendHttpGif'; LcdArray = $arr; PicNum = $jpegs.Count; PicWidth = $Size; PicOffset = $i
                          PicID = $id; PicSpeed = $speed; PicData = [Convert]::ToBase64String($jpegs[$i]) } | Out-Null
