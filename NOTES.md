@@ -19,7 +19,7 @@ Divoom's official Times Gate guide has no payload details. Everything below was 
    - `Draw/GetHttpGifId` returns no `PicId` on this firmware, so the script counts IDs itself.
 
 ## Update behaviour (found while building pcmon.ps1)
-- One picture takes ~0.46 s for the device to accept (HTTP round trip); 5 screens ≈ 2.3 s.
+- **Throughput is ~1 picture per second**, serial: a 6 KB picture takes ~0.7 s when the device is idle and ~1.0 s back-to-back; five screens in parallel take as long as five in sequence. Cost scales with bytes (~0.35 s + ~0.1 s/KB; a 1 KB picture takes 0.35 s), not pixels (a 64×64 picture padded to 6 KB costs the same as 128×128). Videos/animations play smoothly only because they are preloaded and played from the device's memory; the HTTP upload path is not built for streaming.
 - Updating one screen leaves the others untouched.
 - Re-sending with a PicID the device has already seen is **ignored** (screen freezes), so every update needs a new ID.
 - **JPEG size must stay in a window of roughly 5–6.5 KB**, or the screen flashes a loading spinner for ~0.5 s before the picture appears. Too small (~4 KB, the device also answers these faster, ~400 ms vs ~720 ms) and too large (7–10 KB) both trigger it. Fix in pcmon.ps1: `Encode-Jpeg` lowers the quality until the file is ≤ 6.5 KB, then `Pad-Jpeg` pads to ≥ 6 KB with a COM (comment) segment after the SOI marker. With that, pictures can be sent back-to-back with no pause. (Pauses between pictures, `PicSpeed` and send order only looked like they helped.)
